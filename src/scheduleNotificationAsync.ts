@@ -1,0 +1,118 @@
+import { Platform } from '@unimodules/core';
+import uuidv4 from 'uuid/v4';
+
+import NotificationScheduler from './NotificationScheduler';
+import { NotificationTriggerInput as NativeNotificationTriggerInput } from './NotificationScheduler.types';
+import {
+  NotificationRequestInput,
+  NotificationTriggerInput,
+  DailyTriggerInput,
+  YearlyTriggerInput,
+  CalendarTriggerInput,
+  TimeIntervalTriggerInput,
+} from './Notifications.types';
+
+export default async function scheduleNotificationAsync(
+  request: NotificationRequestInput
+): Promise<string> {
+  return await NotificationScheduler.scheduleNotificationAsync(
+    request.identifier ?? uuidv4(),
+    request.content,
+    parseTrigger(request.trigger)
+  );
+}
+
+function parseTrigger(userFacingTrigger: NotificationTriggerInput): NativeNotificationTriggerInput {
+  if (userFacingTrigger === null) {
+    return null;
+  }
+
+  if (userFacingTrigger === undefined) {
+    throw new TypeError(
+      'Encountered an `undefined` notification trigger. If you want to trigger the notification immediately, pass in an explicit `null` value.'
+    );
+  }
+
+  if (userFacingTrigger instanceof Date) {
+    return { type: 'date', timestamp: userFacingTrigger.getTime() };
+  } else if (typeof userFacingTrigger === 'number') {
+    return { type: 'date', timestamp: userFacingTrigger };
+  } else if (isYearlyTriggerInput(userFacingTrigger)) {
+    const numberOrDate = userFacingTrigger.date;
+    const repeats = userFacingTrigger.repeats ?? false;
+    if (Platform.OS === 'ios' && repeats) {
+      const date = typeof numberOrDate === 'number' ? new Date(numberOrDate) : numberOrDate;
+      return {
+        type: 'calendar',
+        value: {
+          month: date.getMonth(),
+          day: date.getDate(),
+          minute: date.getMinutes(),
+          second: date.getSeconds(),
+        },
+        repeats: true,
+      };
+    }
+    const timestamp = typeof numberOrDate === 'number' ? numberOrDate : numberOrDate.getTime();
+    return { type: 'date', timestamp, repeats };
+  } else if (isDailyTriggerInput(userFacingTrigger)) {
+    const hour = userFacingTrigger.hour;
+    const minute = userFacingTrigger.minute;
+    if (hour === undefined || hour == null || minute === undefined || minute == null) {
+      throw new TypeError('Both hour and minute need to have valid values. Found undefined');
+    }
+    if (hour < 0 || hour > 23) {
+      throw new RangeError(`The hour parameter needs to be between 0 and 23. Found: ${hour}`);
+    }
+    if (minute < 0 || minute > 59) {
+      throw new RangeError(`The minute parameter needs to be between 0 and 59. Found: ${minute}`);
+    }
+    return {
+      type: 'daily',
+      hour,
+      minute,
+    };
+  } else if (isSecondsPropertyMisusedInCalendarTriggerInput(userFacingTrigger)) {
+    throw new TypeError(
+      'Could not have inferred the notification trigger type: if you want to use a time interval trigger, pass in only `seconds` with or without `repeats` property; if you want to use calendar-based trigger, pass in `second`.'
+    );
+  } else if ('seconds' in userFacingTrigger) {
+    return {
+      type: 'timeInterval',
+      seconds: userFacingTrigger.seconds,
+      repeats: userFacingTrigger.repeats ?? false,
+    };
+  } else {
+    const { repeats, ...calendarTrigger } = userFacingTrigger;
+    return { type: 'calendar', value: calendarTrigger, repeats };
+  }
+}
+
+function isDailyTriggerInput(
+  trigger: DailyTriggerInput | CalendarTriggerInput | TimeIntervalTriggerInput
+): trigger is DailyTriggerInput {
+  return (
+    Object.keys(trigger).length === 3 &&
+    'hour' in trigger &&
+    'minute' in trigger &&
+    'repeats' in trigger &&
+    trigger.repeats === true
+  );
+}
+
+function isYearlyTriggerInput(
+  trigger: YearlyTriggerInput | TimeIntervalTriggerInput | DailyTriggerInput | CalendarTriggerInput
+): trigger is YearlyTriggerInput {
+  return 'date' in trigger;
+}
+
+function isSecondsPropertyMisusedInCalendarTriggerInput(
+  trigger: TimeIntervalTriggerInput | CalendarTriggerInput
+) {
+  return (
+    // eg. { seconds: ..., repeats: ..., hour: ... }
+    ('seconds' in trigger && 'repeats' in trigger && Object.keys(trigger).length > 2) ||
+    // eg. { seconds: ..., hour: ... }
+    ('seconds' in trigger && !('repeats' in trigger) && Object.keys(trigger).length > 1)
+  );
+}
